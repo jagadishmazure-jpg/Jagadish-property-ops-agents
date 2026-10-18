@@ -6,3 +6,7 @@ __pycache__/
 dist/
 build/
 feedback.jsonl
+*.py[cod]
+.ruff_cache/
+*.db
+*.pdf

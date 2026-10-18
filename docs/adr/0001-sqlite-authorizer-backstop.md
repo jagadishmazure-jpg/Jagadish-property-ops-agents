@@ -3,6 +3,34 @@
 Date: 2026-10-18
 Status: Accepted (implemented in `propops/authz.py`, `propops/views.py`)
 
+## Revision 2026-10-18 (grokbot-portfolio): strict, view-aware authorizer
+
+The first version of this ADR allowed READ on the base tables behind the
+views outright, on the premise that denying them would break every view
+query. That premise was wrong: when SQLite reads a base table on behalf of
+a view, the authorizer's fifth argument names that view. The old rule made
+the text check the only thing between a caller and the raw tables, and the
+text check had gaps in principle (none found in this repo's denylist).
+
+`propops/authz.py` now applies the portfolio template rule:
+
+- A base-table READ is allowed only when the view-name argument is one of
+  the published views. A READ with no view name is a direct read and is
+  denied, whatever the query text looks like (comma joins, quoting,
+  brackets, parentheses, comments, `main.` prefixes).
+- `sqlite_master` / `sqlite_schema` are always denied, even if a caller
+  lists them as allowed; `load_extension`, writes, DDL, PRAGMA and ATTACH
+  are denied.
+- One narrow exception: SQLite reports a read with an empty column name
+  and no view name for a table that supplies no columns (one side of a
+  view self-join). It is allowed only for tables that sit behind an
+  allowed view, so `SELECT count(*) FROM <such table>` still returns a
+  row count. Any column access (a `WHERE` on a base column) is denied.
+- The text check stays as a first filter with readable errors.
+
+`tests/test_authorizer_strict.py` runs the direct-read shapes against the
+authorizer alone and through the gateway with the text check switched off.
+
 ## Context
 
 The planner's SQL gateway (`views.run_query`) enforced read-only access

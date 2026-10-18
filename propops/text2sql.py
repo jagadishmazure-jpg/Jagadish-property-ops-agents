@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 import sqlite3
 
-from .views import run_query, GatewayError
+from .views import GatewayError, run_query
 
 
 class EscalationNeeded(Exception):
@@ -45,10 +45,27 @@ _INTENTS = [
 ]
 
 
+_PRIORITY = re.compile(r"\bP([1-4])\b", re.I)
+
+
+def _with_priority(name: str, template: str, question: str) -> str:
+    """Filter open work orders by the priority the question names (P1..P4)."""
+    m = _PRIORITY.search(question)
+    if name != "open_wos_by_priority" or not m:
+        return template
+    return template.replace(" ORDER BY", f" WHERE priority = 'P{m.group(1)}' ORDER BY")
+
+
 def answer(conn: sqlite3.Connection, question: str) -> dict:
-    """Answer a question; repair once, then escalate."""
+    """Answer a question; repair once, then escalate.
+
+    A question naming a priority (P1..P4) gets only work orders with that
+    priority; the result also reports how many open work orders have not
+    been triaged yet, so an empty answer is not mistaken for "none".
+    """
     for name, pattern, template in _INTENTS:
         if pattern.search(question):
+            template = _with_priority(name, template, question)
             try:
                 rows = run_query(conn, template)
             except GatewayError:
@@ -59,5 +76,9 @@ def answer(conn: sqlite3.Connection, question: str) -> dict:
                 except GatewayError as exc:
                     raise EscalationNeeded(
                         f"[{exc.rule_id}] could not run safe query") from exc
-            return {"intent": name, "rows": rows, "count": len(rows)}
+            out = {"intent": name, "rows": rows, "count": len(rows)}
+            if template.find("WHERE priority") != -1:
+                out["untriaged"] = run_query(
+                    conn, "SELECT COUNT(*) AS n FROM v_open_wos WHERE priority IS NULL")[0]["n"]
+            return out
     raise EscalationNeeded("no matching intent; needs a human dispatcher")

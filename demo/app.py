@@ -6,11 +6,11 @@ Run:  pip install streamlit && streamlit run demo/app.py
 try:
     import streamlit as st
 except ImportError:  # pragma: no cover
-    raise SystemExit("pip install streamlit, then re-run")
+    raise SystemExit("pip install streamlit, then re-run") from None
 
 from propops import demo_helpers as dh
 
-st.title("Harborview Property Ops — agent demo")
+st.title("Pellcrest Property Ops — agent demo")
 st.caption("Synthetic data. All numbers below come from the local SQLite seed.")
 
 conn = dh.get_conn()

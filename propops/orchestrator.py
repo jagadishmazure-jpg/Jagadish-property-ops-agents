@@ -95,13 +95,20 @@ class Orchestrator:
         return result
 
     def dispatch_tech(self, wo_id: str) -> dict:
-        """Dispatch a technician for a triaged work order (T3-gated if P1)."""
+        """Dispatch a technician (T3-gated if P1).
+
+        The work order is triaged first when this session has not triaged
+        it, so a P1 can never skip the emergency-dispatch gate.
+        """
         d = self._triage_cache.get(wo_id)
-        if d and d.priority == "P1":
+        if d is None:
+            d = triage_mod.triage(self.conn, wo_id)
+            self._triage_cache[wo_id] = d
+        if d.priority == "P1":
             self.gate.check("emergency_dispatch")
         try:
             a = dispatch_mod.dispatch(self.conn, wo_id)
-        except dispatch_mod.NoTechAvailable as exc:
+        except (dispatch_mod.NoTechAvailable, dispatch_mod.NotDispatchable) as exc:
             self.audit.record("orchestrator", "dispatch_failed", str(exc))
             return {"dispatched": False, "reason": str(exc)}
         self.audit.record("orchestrator", "dispatch",

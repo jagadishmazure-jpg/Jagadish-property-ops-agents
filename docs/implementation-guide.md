@@ -2,7 +2,7 @@
 
 ## Run it
 ```bash
-python -m pytest tests/ -q        # 69 regression checks, stdlib only
+python -m pytest tests/ -q        # full regression suite, stdlib only
 python scripts/count_tests.py     # prints the real total
 ```
 Optional demo UI:

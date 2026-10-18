@@ -63,7 +63,7 @@ def test_backstop_rejects_quoted_sqlite_master(conn):
 
 
 def test_authorizer_denies_sqlite_master_directly(conn):
-    with views_only(conn, views.VIEWS.keys(), views.BASE_TABLES):
+    with views_only(conn, views.VIEWS.keys()):
         with pytest.raises(sqlite3.DatabaseError):
             conn.execute('SELECT * FROM "sqlite_master"').fetchall()
 
@@ -105,13 +105,13 @@ def test_backstop_never_fetchall(big_conn):
 # ---------- authorizer: views still work, writes/PRAGMA denied ----------
 
 def test_authorizer_allows_view_aggregates(conn):
-    with views_only(conn, views.VIEWS.keys(), views.BASE_TABLES):
+    with views_only(conn, views.VIEWS.keys()):
         row = conn.execute("SELECT count(*) FROM v_open_wos").fetchone()
     assert row[0] > 0
 
 
 def test_authorizer_denies_write_and_pragma(conn):
-    with views_only(conn, views.VIEWS.keys(), views.BASE_TABLES):
+    with views_only(conn, views.VIEWS.keys()):
         with pytest.raises(sqlite3.DatabaseError):
             conn.execute("UPDATE work_orders SET priority='P1'")
         with pytest.raises(sqlite3.DatabaseError):
@@ -122,13 +122,12 @@ def test_authorizer_denies_write_and_pragma(conn):
 
 
 def test_authorizer_denial_maps_to_sec_select_03(conn, monkeypatch):
-    # Force the authorizer path by smuggling past text checks is not
-    # possible; instead verify a denied DB operation surfaces as
-    # SEC-SELECT-03 when it happens inside run_query.
+    # Verify a denied DB operation surfaces as SEC-SELECT-03 when it
+    # happens inside run_query (the text-check bypass tests are separate).
     orig = views.views_only
 
-    def deny_all(c, v, t):
-        return views_only(c, set(), set())
+    def deny_all(c, v):
+        return views_only(c, set())
 
     monkeypatch.setattr(views, "views_only", deny_all)
     try:

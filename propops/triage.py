@@ -1,9 +1,13 @@
 """Work-order triage engine — the repo's first differentiator.
 
-Priority = 0.5*urgency + 0.3*tenant-impact + 0.2*asset-criticality, on a
-0..5 scale, mapped to P1..P4. Every decision cites the exact rule that
-fired. Repeat issues (3+ same category + unit in 30 days) bump one level
-(TR-ESC-01).
+Score = 0.5*urgency + 0.3*tenant-impact + 0.2*asset-criticality, on a
+0..5 scale. The priority is the higher of the rule ladder (TR-P1-01 ..
+TR-P4-01, safety auto-P1 TR-P1-02) and the score band TR-SCORE-01
+(>= 4.5 P1, >= 3.5 P2, >= 2.5 P3, else P4), so a high tenant impact or
+critical asset raises the priority as SOP-01 describes. Every decision
+cites the rules that fired. Repeat issues (this ticket plus 2+ earlier
+ones, same category and unit, within the 30 days before it) bump one
+level (TR-ESC-01).
 """
 
 from __future__ import annotations
@@ -13,6 +17,15 @@ from dataclasses import dataclass
 
 SAFETY_CATEGORIES = {"safety"}
 CRITICAL_ASSETS = {"boiler", "elevator", "water-main", "fire-alarm"}
+SCORE_BANDS = ((4.5, "P1"), (3.5, "P2"), (2.5, "P3"))  # TR-SCORE-01
+_RANK = {"P1": 1, "P2": 2, "P3": 3, "P4": 4}
+
+
+def _score_band(score: float) -> str:
+    for floor, priority in SCORE_BANDS:
+        if score >= floor:
+            return priority
+    return "P4"
 
 
 @dataclass
@@ -53,7 +66,7 @@ def _is_repeat(conn: sqlite3.Connection, wo_id: str) -> bool:
     unit, cat, reported = row
     count = conn.execute(
         "SELECT COUNT(*) FROM work_orders WHERE unit_id = ? AND category = ? "
-        "AND julianday(?) - julianday(reported_at) <= 30",
+        "AND julianday(?) - julianday(reported_at) BETWEEN 0 AND 30",
         (unit, cat, reported)).fetchone()[0]
     return count >= 3
 
@@ -82,6 +95,11 @@ def triage(conn: sqlite3.Connection, wo_id: str) -> TriageDecision:
     else:
         priority, rule = "P4", "TR-P4-01 (urgency<=2)"
     rules.append(rule)
+
+    band = _score_band(score)
+    if _RANK[band] < _RANK[priority]:
+        priority = band
+        rules.append(f"TR-SCORE-01 (weighted score {score} maps to {band})")
 
     if _is_repeat(conn, wo_id) and priority != "P1":
         priority = {"P2": "P1", "P3": "P2", "P4": "P3"}[priority]
