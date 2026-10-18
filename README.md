@@ -2,8 +2,8 @@
 
 End-to-end property maintenance operations agents: work-order triage,
 technician dispatch, preventive maintenance, and tenant satisfaction —
-on a fictional portfolio (Harborview Property Group), synthetic SQLite
-telemetry, and 69 green regression checks.
+on a fictional portfolio (Pellcrest Property Group), synthetic SQLite
+telemetry, and a regression suite whose count CI checks.
 
 **Recruiter summary.** Property teams drown in maintenance tickets and
 miss the safety-critical ones. This repo shows an agent system that
@@ -11,8 +11,8 @@ triages every work order with a cited rule (urgency × tenant impact ×
 asset criticality → P1–P4), dispatches the best qualified technician
 with a per-factor breakdown, and refuses or gates anything risky —
 behind a SELECT-only SQL gateway, a hash-chained audit log, and
-PII-scrubbed feedback. Proof: 89/89 tests green, every README number
-below from a real run.
+PII-scrubbed feedback. The test count and the differentiator output in
+"Standardization review" are regenerated and checked by CI on every push.
 
 ## How this differs from coldchain/retail
 
@@ -73,7 +73,8 @@ breakdown: 0.40*1.0(skill) + 0.35*1.0(proximity) + 0.25*0.8(availability) = 0.95
 
 Text-to-SQL (from a real run):
 ```
-"Which open work orders are P1?" -> intent: open_wos_by_priority, 24 rows
+"Which open work orders are P1?" -> intent: open_wos_by_priority, 0 rows, untriaged: 24
+(after triaging WO-1001: 1 row, untriaged: 23)
 ```
 
 SOP retrieval (from a real run):
@@ -85,7 +86,7 @@ SOP retrieval (from a real run):
 
 Offline first — stdlib only, no network, no keys:
 ```bash
-python -m pytest tests/ -q        # 89 tests
+python -m pytest tests/ -q        # full suite
 python scripts/count_tests.py     # prints the real total
 ```
 
@@ -101,9 +102,11 @@ streamlit run demo/app.py
   no DDL/DML keywords outside string literals, only the four published
   views — raw base tables and `sqlite_master` rejected
   (SEC-SELECT-01/02/03, each with regression checks).
-- SQLite authorizer backstop (`propops/authz.py`): the database itself
-  denies writes, PRAGMA/ATTACH, and reads outside the views during
-  planner queries; rows capped with `fetchmany`, never `fetchall`.
+- SQLite authorizer (`propops/authz.py`), independent of the text check:
+  a base table is readable only on behalf of a published view, never when
+  named directly; `sqlite_master`, writes, PRAGMA/ATTACH and
+  `load_extension` are denied. Rows are capped at 100 with `fetchmany`
+  (the caller's `limit` is clamped), never `fetchall`.
   See [`docs/adr/0001-sqlite-authorizer-backstop.md`](docs/adr/0001-sqlite-authorizer-backstop.md).
 - Confirmation gate on emergency dispatch and lease-violation
   enforcement; denies on timeout.
@@ -119,27 +122,105 @@ streamlit run demo/app.py
 
 - TF-IDF has no stemming: "triage" will not match "triaged". Queries
   should use the SOPs' vocabulary; a miss returns an explicit gap.
-- Gateway hardening: a text-only SEC-SELECT-03 once let raw table names
-  through (`FROM work_orders` mentioned no `v_*` to reject). Fixed with
-  a base-table denylist, a SQLite authorizer backstop, and a
-  fetch-time row cap — see
+- Gateway: the authorizer's one allowance is an empty-column read of a
+  table behind a view (needed for view self-joins), so
+  `SELECT count(*) FROM work_orders` returns a count if the text check is
+  bypassed; no column data is readable. See
   [`docs/adr/0001-sqlite-authorizer-backstop.md`](docs/adr/0001-sqlite-authorizer-backstop.md)
   and `tests/test_gateway_backstop.py`.
 - The triage weights (0.5/0.3/0.2) and dispatch weights (0.40/0.35/0.25)
   are reasonable defaults, not calibrated — tune against historical
   tickets before production use.
 - The live parts feed is a stub; only the fake feed returns lead times.
+- Safety work orders (gas odor, sparking) are never auto-dispatched: no
+  technician carries a safety skill, so dispatch raises `NoTechAvailable`
+  and a human routes them.
+- Priorities exist only for triaged work orders; priority questions report
+  the untriaged count instead of guessing.
+- The score bands (4.5 / 3.5 / 2.5) are as uncalibrated as the weights.
 - Synthetic data only: 30 work orders cannot prove real-world triage
   quality. The 89 checks are regression checks, not quality claims.
+
+## Standardization review (2026-10-18)
+
+grokbot-portfolio reviewed this repo against the portfolio standard. Each
+bug below has a regression test (`tests/test_propops.py`, "review fixes"
+section, and `tests/test_authorizer_strict.py`) that fails on the old code.
+
+- **Authorizer allowed raw base tables.** `authz.py` allowed READ on every
+  table behind a view, so the text denylist was the only control; with it
+  bypassed, `SELECT * FROM work_orders, v_open_wos` returned 720 rows. The
+  authorizer now allows a base-table read only on behalf of a published
+  view (ADR 0001, revision). The caller's `limit` is clamped to 100.
+- **Repeat bump counted later tickets.** TR-ESC-01 counted tickets reported
+  *after* the one being triaged, so WO-1010, the first of three plumbing
+  tickets in unit U014, was bumped as a repeat. Only earlier tickets in
+  the 30 days before now count.
+- **The weighted score never affected the priority.** SOP-01 says the
+  score maps to P1-P4, but only the rule ladder decided. The priority is
+  now the higher of the ladder and the score band TR-SCORE-01, so 30
+  residents without heat at urgency 3 (score 3.6) is P2, not P3.
+- **Three categories could never be dispatched.** Appliance tickets needed
+  a skill called "appliance" (technicians have "appliances") and
+  structural tickets a "structural" skill nobody has. They now map to
+  appliances and carpentry. Safety tickets still are not auto-dispatched
+  and say so (no technician carries a safety skill).
+- **Dispatch reopened closed work orders** (WO-1016, WO-1019 became
+  "assigned") and double-assigned assigned ones. Only open work orders are
+  dispatched now (DSP-OPEN-01).
+- **A technician at maximum load was still assigned,** against SOP-02.
+  Such technicians are skipped (DSP-LOAD-01).
+- **The P1 emergency-dispatch gate could be skipped**: `dispatch_tech`
+  only checked it for work orders triaged earlier in the same session.
+  It now triages first, so an untriaged P1 is gated.
+- **"Which open work orders are P1?" returned all 24 open work orders,**
+  none of which had a priority. The intent now filters by the priority
+  named and reports how many open work orders are still untriaged.
+- **The card pattern redacted dates and unit numbers** (`2026-10-18
+  2026-10-25` became `[CARD]-25`). It now matches 4x4 groups or 13-16
+  contiguous digits only.
+- Fictional names that matched real businesses were renamed
+  (the company is now Pellcrest Property Group).
+
+Differentiator on the seeded data (regenerated and checked by CI on every push):
+
+<!-- run: python scripts/show_differentiator.py -->
+```text
+Triage (priority = higher of rule ladder and score band; repeat bump last):
+  WO-1001 -> P1 4.8 | TR-P1-01
+  WO-1007 -> P1 4.7 | TR-P1-02
+  WO-1010 -> P3 3.0 | TR-P3-01
+  WO-1011 -> P4 2.2 | TR-P4-01
+  WO-1012 -> P2 3.0 | TR-P3-01; TR-ESC-01
+  WO-1016 -> P3 2.5 | TR-P4-01; TR-SCORE-01
+  WO-1032 -> P2 2.2 | TR-P2-01
+Dispatch (skill hard filter, open work orders only, max load respected):
+  WO-1001 -> TECH-001 | 0.40*1.0(skill) + 0.35*1.0(proximity) + 0.25*0.8(availability) = 0.95
+  WO-1018 -> TECH-003 | 0.40*1.0(skill) + 0.35*0.5(proximity) + 0.25*1.0(availability) = 0.825
+  WO-1029 -> TECH-002 | 0.40*1.0(skill) + 0.35*0.5(proximity) + 0.25*0.4(availability) = 0.675
+  WO-1007 -> not dispatched: no qualified on-shift technician for safety (WO-1007)
+  WO-1016 -> not dispatched: DSP-OPEN-01: WO-1016 is closed; only open work orders are dispatched
+Emergency dispatch of untriaged P1 WO-1001: human confirmation required and not granted for emergency_dispatch
+Gateway: SELECT * FROM v_open_wos, work_orders -> [SEC-SELECT-03] raw table access is not allowed; use the published views
+```
+<!-- /run -->
+
+Test count (also checked by CI):
+
+<!-- run: python scripts/count_tests.py -->
+```text
+121 tests collected
+```
+<!-- /run -->
 
 ## Built / Written-not-run / Planned
 
 | Item | Status |
 |---|---|
-| Triage engine + dispatch optimizer, gateway, RAG, signals, orchestrator, audit, PII-scrubbed feedback | Built, 89 tests green |
+| Triage engine + dispatch optimizer, gateway, RAG, signals, orchestrator, audit, PII-scrubbed feedback | Built (test count above) |
 | Thin Streamlit demo (`demo/app.py`) | Built, logic tested via `demo_helpers` |
 | `knowledge/` docs, SOPs, implementation guide, interview points, threat model | Built |
-| CI workflow (`.github/workflows/ci.yml`) | Written, not run here |
+| CI: ruff, pytest, docs drift check, hashed brand check, gitleaks; CodeQL; Dependabot | Built (runs on every push) |
 | Live parts-supplier integration | Planned |
 | Calibration of triage/dispatch weights on historical tickets | Planned |
 | Deployment to any cloud | Planned (nothing deployed) |
@@ -150,9 +231,16 @@ streamlit run demo/app.py
   (reefer telemetry; different differentiators).
 - `Jagadish-retail-ops-agents` — same spine (store operations).
 - `Jagadish-warehouse-ops-agents` — same spine (slotting optimizer).
+- `Jagadish-energy-grid-agents` — also ranks field crews, but for grid
+  outages (critical-facility severity floor, utility crews). This repo
+  dispatches building technicians to tenant work orders with a
+  category-to-skill map, a load cap and a P1 confirmation gate.
+- `Jagadish-predictive-maintenance-agents` — predicts equipment failure
+  from sensor trends. This repo's preventive tasks are calendar-based
+  (overdue view); there is no failure prediction here.
 
 ---
 
-*All data is synthetic and fictional (Harborview Property Group is an
+*All data is synthetic and fictional (Pellcrest Property Group is an
 invented name). This is an independent portfolio project, not affiliated
 with any real property company.*

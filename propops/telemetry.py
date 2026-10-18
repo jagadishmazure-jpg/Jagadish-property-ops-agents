@@ -1,6 +1,6 @@
 """Synthetic property telemetry on SQLite.
 
-Fictional portfolio: Harborview Property Group (invented). Deterministic
+Fictional portfolio: Pellcrest Property Group (invented). Deterministic
 seed (42). Anchor records the tests rely on:
 
   * WO-1001 — burst water main, urgency 5, 40 residents affected -> P1
@@ -65,8 +65,8 @@ CREATE TABLE satisfaction (
 """
 
 BUILDINGS = [
-    ("BLDG-01", "Harborview Tower A", 120),
-    ("BLDG-02", "Harborview Tower B", 96),
+    ("BLDG-01", "Pellcrest Tower A", 120),
+    ("BLDG-02", "Pellcrest Tower B", 96),
     ("BLDG-03", "Marina Court", 48),
 ]
 
@@ -126,7 +126,7 @@ def seed(rng: random.Random | None = None) -> sqlite3.Connection:
         "pest": "Ants in kitchen pantry",
     }
     n = 1013
-    for i in range(24):
+    for _i in range(24):
         bldg = rng.choice(BUILDINGS)[0]
         unit = f"{bldg}-U{rng.randint(1, 40):03d}"
         cat = rng.choice(cats)

@@ -18,7 +18,9 @@ _PATTERNS = [
      "[PHONE]"),
     # SSN: 123-45-6789. The \b anchors keep dates like 2026-10-18 intact.
     (re.compile(r"\b\d{3}-\d{2}-\d{4}\b"), "[SSN]"),
-    (re.compile(r"\b(?:\d[ -]*?){13,16}\b"), "[CARD]"),
+    # Card: four groups of four (space or dash) or 13-16 contiguous digits.
+    # The old loose pattern also ate date pairs and runs of unit numbers.
+    (re.compile(r"\b(?:\d{4}[- ]\d{4}[- ]\d{4}[- ]\d{4}|\d{13,16})\b"), "[CARD]"),
 ]
 
 

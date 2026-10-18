@@ -7,11 +7,13 @@ Rule IDs (cited in audit + errors):
   SEC-SELECT-03 — queries may only touch the four published views; raw
                   base tables and system tables are rejected.
 
-Defense in depth: the text checks below are the primary gate. Behind
-them, ``authz.views_only`` registers a SQLite authorizer on the
-connection so the database itself denies writes, PRAGMA/ATTACH, and
-reads of sqlite_master. Row counts are capped with ``fetchmany`` —
-never by trusting the query's LIMIT.
+Defense in depth: the text checks below are a first filter. Behind them,
+``authz.views_only`` registers a SQLite authorizer so the database itself
+enforces SEC-SELECT-03: a base table may be read only on behalf of a
+published view, never named directly (comma joins, quoting, comments and
+parentheses included), and ``sqlite_master``, PRAGMA, ATTACH and writes are
+always denied. Row counts are capped with ``fetchmany`` at MAX_LIMIT rows,
+never by trusting the query's LIMIT or the caller's ``limit``.
 """
 
 from __future__ import annotations
@@ -57,18 +59,12 @@ VIEWS = {
     """,
 }
 
+MAX_LIMIT = 100
+
 _WRITE_KEYWORDS = re.compile(
     r"\b(insert|update|delete|drop|alter|create|replace|truncate|grant|revoke|attach|detach)\b",
     re.IGNORECASE,
 )
-
-# Base tables the views are defined over. Passed to the authorizer as
-# the table allowlist (SQLite invokes the authorizer for base tables
-# inside view definitions, so views cannot run without this).
-BASE_TABLES = {
-    "work_orders", "units", "technicians", "buildings",
-    "preventive", "satisfaction",
-}
 
 # System tables are never allowlisted anywhere: mentioning them in
 # planner SQL is rejected here, and the authorizer denies them too.
@@ -113,11 +109,12 @@ def install_views(conn: sqlite3.Connection) -> None:
 def run_query(conn: sqlite3.Connection, sql: str, limit: int = 100) -> list[dict]:
     """Execute a read-only query after gateway checks.
 
-    The row cap is enforced with ``fetchmany(limit + 1)`` — the query's
+    The row cap is enforced with ``fetchmany(limit)`` — the query's
     own LIMIT is never trusted (``LIMIT 100000 -- x``, ``LIMIT n OFFSET
     m``, and ``LIMIT m, n`` all bypass LIMIT-rewriting). ``fetchall`` is
-    never called on planner queries.
+    never called on planner queries. ``limit`` is clamped to 1..MAX_LIMIT.
     """
+    limit = max(1, min(int(limit), MAX_LIMIT))
     text = sql.strip().rstrip(";")
     if not re.match(r"(?is)^\s*select\b", text):
         raise GatewayError("SEC-SELECT-01", "only a single SELECT statement is allowed")
@@ -137,13 +134,16 @@ def run_query(conn: sqlite3.Connection, sql: str, limit: int = 100) -> list[dict
                            "raw table access is not allowed; use the published views")
     conn.row_factory = sqlite3.Row
     try:
-        with views_only(conn, VIEWS.keys(), BASE_TABLES):
-            cursor = conn.execute(text)
-            rows = cursor.fetchmany(limit + 1)[:limit]
-    except sqlite3.DatabaseError as exc:
-        # Authorizer denial (or any other DB-level refusal).
-        raise GatewayError("SEC-SELECT-03",
-                           f"denied by database authorizer: {exc}") from exc
+        with views_only(conn, VIEWS.keys()) as denied:
+            try:
+                cursor = conn.execute(text)
+            except sqlite3.DatabaseError as exc:
+                if denied:
+                    raise GatewayError(
+                        "SEC-SELECT-03",
+                        f"denied by database authorizer: {sorted(set(denied))}") from exc
+                raise
+            rows = cursor.fetchmany(limit)
     except sqlite3.Error as exc:
         raise GatewayError("SEC-SELECT-01", f"query failed: {exc}") from exc
     return [dict(r) for r in rows]

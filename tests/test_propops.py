@@ -11,12 +11,9 @@ from propops import escalation as esc_mod
 from propops import feedback as fb_mod
 from propops import orchestrator as orch_mod
 from propops import partssignal as parts_mod
-from propops import pii
-from propops import sop_rag
-from propops import telemetry
+from propops import pii, sop_rag, telemetry, views
 from propops import text2sql as t2s
 from propops import triage as triage_mod
-from propops import views
 from propops.views import GatewayError
 
 DOCS = Path(__file__).resolve().parent.parent / "docs" / "sops"
@@ -120,6 +117,7 @@ def test_gateway_comment_rejected(conn):
 # ---------- text2sql ----------
 
 def test_intent_open_wos(conn):
+    triage_mod.triage(conn, "WO-1001")
     out = t2s.answer(conn, "Which open work orders are P1?")
     assert out["intent"] == "open_wos_by_priority" and out["count"] > 0
 
@@ -454,3 +452,85 @@ def test_demo_ask_escalates(conn):
 def test_demo_open_wo_summary(conn):
     out = dh.open_wo_summary(conn)
     assert isinstance(out, list)
+
+
+# ---------- review fixes (grokbot-portfolio, 2026-10-18) ----------
+
+def _add_wo(conn, wo_id, category, urgency, residents, asset=None,
+            status="open", unit="BLDG-01-U050", reported="2026-10-10T09:00:00"):
+    conn.execute("INSERT INTO work_orders (wo_id, unit_id, category, summary, urgency, "
+                 "residents_affected, asset, status, priority, reported_at) "
+                 "VALUES (?,?,?,?,?,?,?,?,NULL,?)",
+                 (wo_id, unit, category, "test ticket", urgency, residents, asset, status, reported))
+    conn.commit()
+
+
+def test_review_repeat_counts_only_earlier_tickets(conn):
+    # U014 has plumbing tickets on 09-11, 09-20 and 09-29: only the third is a repeat.
+    first = triage_mod.triage(conn, "WO-1010")
+    second = triage_mod.triage(conn, "WO-1011")
+    third = triage_mod.triage(conn, "WO-1012")
+    assert not any(r.startswith("TR-ESC-01") for r in first.rules + second.rules)
+    assert (first.priority, second.priority) == ("P3", "P4")
+    assert third.priority == "P2" and third.rules[-1].startswith("TR-ESC-01")
+
+
+def test_review_weighted_score_raises_priority(conn):
+    # urgency 3 alone is P3, but 30 residents without heat score 3.6 -> P2.
+    _add_wo(conn, "WO-9001", "hvac", 3, 30)
+    d = triage_mod.triage(conn, "WO-9001")
+    assert d.score == 3.6 and d.priority == "P2"
+    assert any(r.startswith("TR-SCORE-01") for r in d.rules)
+
+
+def test_review_score_band_never_lowers_a_rule_priority(conn):
+    d = triage_mod.triage(conn, "WO-1032")  # pest ticket on a critical asset
+    assert d.priority == "P2" and d.score == 2.2
+
+
+def test_review_appliance_and_structural_are_dispatchable(conn):
+    _add_wo(conn, "WO-9002", "appliance", 3, 1)
+    _add_wo(conn, "WO-9003", "structural", 3, 1, unit="BLDG-03-U001")
+    assert dispatch_mod.dispatch(conn, "WO-9002").tech_id == "TECH-002"   # appliances
+    assert dispatch_mod.dispatch(conn, "WO-9003").tech_id == "TECH-005"   # carpentry
+
+
+def test_review_safety_is_not_auto_dispatched(conn):
+    with pytest.raises(dispatch_mod.NoTechAvailable, match="safety"):
+        dispatch_mod.dispatch(conn, "WO-1007")
+
+
+def test_review_closed_work_order_is_not_reopened(conn):
+    with pytest.raises(dispatch_mod.NotDispatchable, match="DSP-OPEN-01"):
+        dispatch_mod.dispatch(conn, "WO-1016")
+    assert conn.execute("SELECT status FROM work_orders WHERE wo_id='WO-1016'").fetchone()[0] == "closed"
+    assert dh.dispatch_for(conn, "WO-1023")["dispatched"] is False  # already assigned
+
+
+def test_review_tech_at_max_load_is_never_assigned(conn):
+    conn.execute("UPDATE technicians SET shift='off' WHERE tech_id='TECH-003'")
+    conn.execute("UPDATE technicians SET active_wos=? WHERE tech_id='TECH-001'", (dispatch_mod.MAX_LOAD,))
+    with pytest.raises(dispatch_mod.NoTechAvailable, match="DSP-LOAD-01"):
+        dispatch_mod.dispatch(conn, "WO-1001")
+
+
+def test_review_p1_gate_applies_without_prior_triage(conn):
+    o = orch_mod.Orchestrator(conn)
+    with pytest.raises(esc_mod.GateDenied):
+        o.dispatch_tech("WO-1001")
+    assert conn.execute("SELECT status FROM work_orders WHERE wo_id='WO-1001'").fetchone()[0] == "open"
+
+
+def test_review_card_pattern_keeps_dates_and_unit_runs():
+    for text in ("visits on 2026-10-18 2026-10-25 ok", "units 101 102 103 104 105 106 107 noisy"):
+        assert pii.scrub(text) == (text, 0)
+    assert pii.scrub("card 4111 1111 1111 1111") == ("card [CARD]", 1)
+    assert pii.scrub("card 4111111111111111") == ("card [CARD]", 1)
+
+
+def test_review_priority_question_filters_and_reports_untriaged(conn):
+    out = t2s.answer(conn, "Which open work orders are P1?")
+    assert out["count"] == 0 and out["untriaged"] == 24
+    triage_mod.triage(conn, "WO-1001")
+    out = t2s.answer(conn, "Which open work orders are P1?")
+    assert [r["wo_id"] for r in out["rows"]] == ["WO-1001"] and out["untriaged"] == 23
