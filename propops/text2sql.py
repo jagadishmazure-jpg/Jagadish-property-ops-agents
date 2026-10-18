@@ -48,6 +48,12 @@ _INTENTS = [
 _PRIORITY = re.compile(r"\bP([1-4])\b", re.I)
 
 
+
+def _drop_order_by(sql: str) -> str:
+    """Cut a trailing ORDER BY clause (linear; no backtracking regex)."""
+    cut = sql.upper().find("ORDER BY")
+    return sql if cut == -1 else sql[:cut].rstrip()
+
 def _with_priority(name: str, template: str, question: str) -> str:
     """Filter open work orders by the priority the question names (P1..P4)."""
     m = _PRIORITY.search(question)
@@ -71,8 +77,7 @@ def answer(conn: sqlite3.Connection, question: str) -> dict:
             except GatewayError:
                 # one simplified repair: strip to the bare template
                 try:
-                    rows = run_query(conn, re.sub(r"\s+ORDER BY.*", "", template,
-                                                 flags=re.I))
+                    rows = run_query(conn, _drop_order_by(template))
                 except GatewayError as exc:
                     raise EscalationNeeded(
                         f"[{exc.rule_id}] could not run safe query") from exc

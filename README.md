@@ -209,7 +209,7 @@ Test count (also checked by CI):
 
 <!-- run: python scripts/count_tests.py -->
 ```text
-121 tests collected
+123 tests collected
 ```
 <!-- /run -->
 

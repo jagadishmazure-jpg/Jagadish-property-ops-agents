@@ -80,3 +80,23 @@ def test_base_column_filter_is_denied_even_in_count(conn):
     with views_only(conn, ALLOWED):
         with pytest.raises(sqlite3.DatabaseError):
             conn.execute("SELECT count(*) FROM work_orders WHERE urgency > 0").fetchall()
+
+
+# ---------- CodeQL fixes (grokbot-portfolio, 2026-10-18) ----------
+def test_unquote_matches_regex_and_is_linear():
+    import re
+    import time
+
+    from propops.views import _unquote
+    for s in ['SELECT * FROM [work_orders]', '[a] [] [b', 'x [[y]] z', '"q" ""r"', '']:
+        assert _unquote(s, "[", "]") == re.sub(r"\[([^\]]+)\]", r"\1", s)
+        assert _unquote(s, '"', '"') == re.sub(r'"([^"]+)"', r"\1", s)
+    t = time.perf_counter()
+    _unquote("[" * 200_000, "[", "]")
+    assert time.perf_counter() - t < 1.0
+
+
+def test_drop_order_by():
+    from propops.text2sql import _drop_order_by
+    assert _drop_order_by("SELECT a FROM v_open_wos  ORDER BY a DESC") == "SELECT a FROM v_open_wos"
+    assert _drop_order_by("SELECT a FROM v_open_wos") == "SELECT a FROM v_open_wos"

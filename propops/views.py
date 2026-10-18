@@ -67,9 +67,7 @@ _WRITE_KEYWORDS = re.compile(
 )
 
 # System tables are never allowlisted anywhere: mentioning them in
-# planner SQL is rejected here, and the authorizer denies them too.
-_SYSTEM_TABLES = {"sqlite_master", "sqlite_sequence", "sqlite_temp_master"}
-
+# planner SQL is rejected by _TABLE_DENY, and the authorizer denies them too.
 _TABLE_DENY = re.compile(
     r"\b(work_orders|units|technicians|buildings|preventive|satisfaction"
     r"|sqlite_master|sqlite_sequence|sqlite_temp_master)\b",
@@ -88,10 +86,32 @@ def _normalize_identifiers(sql: str) -> str:
     ``FROM "sqlite_master"`` or ``FROM [work_orders]``.
     """
     sql = _strip_literals(sql)
-    sql = re.sub(r'"([^"]+)"', r"\1", sql)
-    sql = re.sub(r"\[([^\]]+)\]", r"\1", sql)
-    sql = re.sub(r"`([^`]+)`", r"\1", sql)
+    for open_, close in (('"', '"'), ("[", "]"), ("`", "`")):
+        sql = _unquote(sql, open_, close)
     return sql
+
+
+def _unquote(sql: str, open_: str, close: str) -> str:
+    """Replace ``<open>name<close>`` with ``name`` in one linear pass.
+
+    Same result as ``re.sub(open + '([^close]+)' + close, ...)`` but without
+    the quadratic backtracking on many unmatched openers (CodeQL ReDoS).
+    """
+    out: list[str] = []
+    i, n = 0, len(sql)
+    while i < n:
+        if sql[i] == open_:
+            j = sql.find(close, i + 1)
+            if j == -1:
+                out.append(sql[i:])
+                break
+            if j > i + 1:
+                out.append(sql[i + 1:j])
+                i = j + 1
+                continue
+        out.append(sql[i])
+        i += 1
+    return "".join(out)
 
 
 class GatewayError(Exception):
