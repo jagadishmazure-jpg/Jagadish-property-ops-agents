@@ -84,7 +84,6 @@ def test_base_column_filter_is_denied_even_in_count(conn):
 
 # ---------- CodeQL fixes (grokbot-portfolio, 2026-10-18) ----------
 def test_unquote_matches_regex_and_is_linear():
-    import re
     import time
 
     from propops.views import _unquote
